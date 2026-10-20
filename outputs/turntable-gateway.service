@@ -1,0 +1,18 @@
+[Unit]
+Description=HZZT RS422 turntable UDP gateway
+Wants=network-online.target ether-relay.service
+After=network-online.target ether-relay.service
+
+[Service]
+Type=simple
+User=teamhd
+Group=teamhd
+SupplementaryGroups=dialout
+ExecStart=/usr/bin/python3 /home/teamhd/turntable/turntable_gateway.py --port /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A9UOWY7G-if00-port0 --baud 115200 --bind 192.168.1.101 --listen-port 20003 --udp-host 192.168.1.102 --udp-port 20003 --allowed-host 192.168.1.102
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

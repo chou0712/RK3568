@@ -1,0 +1,23 @@
+[Unit]
+Description=CPG-3568 eth0-eth1 transparent Ethernet relay
+After=NetworkManager.service network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/nmcli device set eth0 managed no
+ExecStartPre=-/usr/bin/nmcli device set eth1 managed no
+ExecStartPre=/usr/sbin/ip addr flush dev eth0
+ExecStartPre=/usr/sbin/ip addr flush dev eth1
+ExecStartPre=/usr/sbin/ip link set eth0 up
+ExecStartPre=/usr/sbin/ip link set eth1 up
+ExecStartPre=-/usr/sbin/ip addr add 192.168.1.101/24 dev eth1
+ExecStartPre=-/usr/sbin/ethtool -K eth0 gro off lro off gso off tso off
+ExecStartPre=-/usr/sbin/ethtool -K eth1 gro off lro off gso off tso off
+ExecStart=/home/teamhd/camera-relay/ether_relay eth0 eth1
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

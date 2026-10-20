@@ -1,0 +1,19 @@
+[Unit]
+Description=WTGAHRS3-TTL IMU reader and UDP gateway
+Wants=ether-relay.service
+After=ether-relay.service
+
+[Service]
+Type=simple
+User=teamhd
+Group=teamhd
+SupplementaryGroups=dialout
+WorkingDirectory=/home/teamhd/imu-reader
+ExecStart=/usr/bin/python3 /home/teamhd/imu-reader/wtgahrs3_reader.py --transport ttl --port /dev/ttyS0 --baud 9600 --udp-host 192.168.1.102 --udp-port 20002 --udp-source 192.168.1.101 --udp-listen-port 20002 --udp-type 0x82
+Restart=on-failure
+RestartSec=2
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
