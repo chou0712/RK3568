@@ -1,22 +1,25 @@
-# WTGAHRS3-485 数据采集
+# WTGAHRS3-TTL USB数据采集
 
 ## 已确认参数
 
-- 型号：WTGAHRS3-485
-- 协议：Modbus RTU，功能码 `0x03`
+- 型号：WTGAHRS3-TTL
+- 协议：WIT标准串口协议，11字节`0x55`帧
 - 波特率：9600，8N1
-- 当前设备地址：`0x10`
-- 数据寄存器：从 `0x34` 连续读取 13 个寄存器
-- 连接方式：WTGAHRS3-485 A/B -> USB-RS485 -> RK3568 USB
+- 连接方式：WTGAHRS3-TTL -> TTL转USB模块 -> RK3568下方USB口
+- 上方USB口：转台FTDI USB-RS422
+- 下方USB口：Silicon Labs CP2102 TTL转USB（`10c4:ea60`），服务使用稳定`by-id`路径
 
 程序当前读取加速度、角速度、姿态角和温度，以一行一个 JSON 对象输出到标准输出，同时可将每个样本作为一个 UDP 数据报发送。当前阶段不写数据文件，也不验证 GNSS 定位。
 
-## 通过网口/光纤发送惯导数据
+2026-10-20已在当前RK3568完成部署：进程实际打开CP2102对应的`/dev/ttyUSB1`，
+上位机连续接收50包，丢包0，频率10.02Hz；转台和摄像头转发服务同时保持`active`。
 
-网口转光纤模块是透明的二层介质转换器，不需要专用驱动。程序只需从连接光纤模块的 `eth1` 发出普通 UDP 数据。当前初始配置为：
+## 通过网口2发送惯导数据
+
+网口1连接摄像头，网口2连接上位机。惯导程序从连接上位机的`eth1`发出普通UDP数据。当前配置为：
 
 - RK3568 源地址：`192.168.1.101`
-- 目标地址：`192.168.1.255`（同网段广播，远端 IP 未确定时使用）
+- 目标地址：`192.168.1.102`（当前上位机）
 - 目标端口：`20002`（专用于惯导，避免与 RS-422 的 `20000/20001` 冲突）
 - 一条惯导样本对应一个 UDP 数据报
 - 外层二进制帧：`EB 90 + 总长度(2 字节大端) + type + 变长数据 + checksum`
@@ -83,26 +86,37 @@ while True:
     print(peer, payload.decode("utf-8").strip())
 ```
 
-已知远端接收机 IP 后，建议把服务中的 `--udp-host 192.168.1.255` 改成该 IP，使用单播。
+当前使用`192.168.1.102`单播；更换上位机地址时需要同步修改服务。
 
 ## 在 RK3568 上部署
 
-插入 USB-RS485 后先检查：
+将转台接上方USB口、TTL转USB惯导接下方USB口后先检查：
 
 ```bash
-ls -l /dev/ttyUSB*
+ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
+ls -l /dev/serial/by-id/ /dev/serial/by-path/ 2>/dev/null
 dmesg | tail -n 30
 ```
 
-CH340 转换器通常显示为 `/dev/ttyUSB0`。部署程序：
+`ttyUSB0/1`会随插拔顺序变化，不能据此判断上下USB口。实测下方USB的CP2102
+稳定路径如下，服务和前台验证均使用该路径：
+
+```text
+/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0
+```
+
+程序同时保留`--port auto`作为更换转换器后的后备功能；自动模式通过有效WIT帧
+识别惯导，并使用排他锁避免与转台服务共同读取同一串口。部署程序：
 
 ```bash
 mkdir -p /home/teamhd/imu-reader
 cp wtgahrs3_reader.py /home/teamhd/imu-reader/
 chmod +x /home/teamhd/imu-reader/wtgahrs3_reader.py
 python3 /home/teamhd/imu-reader/wtgahrs3_reader.py \
-  --port /dev/ttyUSB0 --baud 9600 --address 0x10 --count 10 --pretty \
-  --udp-host 192.168.1.255 --udp-port 20002 --udp-source 192.168.1.101
+  --transport ttl \
+  --port /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0 \
+  --baud 9600 --count 10 --pretty \
+  --udp-host 192.168.1.102 --udp-port 20002 --udp-source 192.168.1.101
 ```
 
 如果普通用户没有串口权限：
@@ -128,16 +142,19 @@ sudo journalctl -u wtgahrs3-reader.service -f
 
 ## 常见故障
 
-- `No such file or directory`：检查实际设备节点是否为 `/dev/ttyUSB1` 等。
+- `no USB serial ports were found`：检查下方USB口、转换器供电及内核日志。
+- `no USB serial port produced valid ... frames`：确认惯导为WIT标准输出、9600 8N1、TX/RX交叉并共地。
 - `Permission denied`：将 `teamhd` 加入 `dialout` 组，或检查 udev 权限。
-- 超时、收到 0 字节：确认上位机已关闭、A/B 未接反、传感器供电正常。
-- CRC 错误：缩短线缆，检查共地、屏蔽和终端电阻，确认只有一个程序占用串口。
-- 设备无响应：确认地址仍是 `0x10`，不要在上位机中修改设备地址或波特率。
+- 转台异常：确认转台服务使用FTDI稳定路径，惯导服务使用CP2102稳定路径。
+- 校验错误：确认使用TTL电平转换器而不是RS232/RS485转换器，并检查供电和共地。
 
 ## 命令行参数
 
 ```text
---port /dev/ttyUSB0   串口设备
+--transport ttl       WTGAHRS3-TTL被动接收模式（默认）
+--port auto           自动识别有效WIT数据的USB串口（默认）
+--exclude-port PATH   自动识别时排除指定串口，可重复使用
+--probe-timeout 1.5   每个候选USB串口的探测时间（秒）
 --baud 9600           串口波特率
 --address 0x10        Modbus 地址，支持十进制或 0x 前缀
 --interval 0.2        轮询周期，单位秒

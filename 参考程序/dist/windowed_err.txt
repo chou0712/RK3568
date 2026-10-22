@@ -1,0 +1,17 @@
+Traceback (most recent call last):
+  File "main.py", line 27, in main
+  File "tkinter\__init__.py", line 2465, in __init__
+_tkinter.TclError: Can't find a usable init.tcl in the following directories: 
+    {C:\Users\»ÆÎ°\Desktop\pycharm\antenna_upper_computer\dist\ÌìÏß¿ØÖÆÉÏÎ»»ú\_internal\_tcl_data} C:/Users/¨¦\xbb\x84\xe4\xbc\x9f/Desktop/pycharm/antenna_upper_computer/dist/\xe5¡è\xa9\xe7\xba\xbf\xe6\x8e¡ì\xe5\x88\xb6\xe4\xb8\x8a\xe4\xbd\x8d\xe6\x9c\xba/lib/tcl8.6 C:/Users/»ÆÎ°/Desktop/pycharm/antenna_upper_computer/dist/lib/tcl8.6 C:/Users/»ÆÎ°/Desktop/pycharm/antenna_upper_computer/lib/tcl8.6 C:/Users/»ÆÎ°/Desktop/pycharm/antenna_upper_computer/dist/library C:/Users/»ÆÎ°/Desktop/pycharm/antenna_upper_computer/library C:/Users/»ÆÎ°/Desktop/pycharm/antenna_upper_computer/tcl8.6.15/library C:/Users/»ÆÎ°/Desktop/pycharm/tcl8.6.15/library
+
+
+
+This probably means that Tcl wasn't installed properly.
+
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "main.py", line 42, in <module>
+  File "main.py", line 36, in main
+UnicodeEncodeError: 'gbk' codec can't encode character '\xbb' in position 167: illegal multibyte sequence

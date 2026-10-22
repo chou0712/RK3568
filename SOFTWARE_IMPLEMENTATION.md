@@ -1,6 +1,6 @@
 # RK3568 摄像头、惯导与转台系统软件实现说明
 
-> 最后更新：2026-10-19（Asia/Shanghai）  
+> 最后更新：2026-10-20（Asia/Shanghai）
 > 本文重点说明系统的软件实现、数据流，以及 RK3568 和上位机分别部署的程序与配置。硬件接线和完整验收信息参见 `HANDOFF.md`。
 
 ## 1. 软件总体架构
@@ -13,18 +13,18 @@
     -> RK3568 eth0
     -> ether_relay 用户态二层转发
     -> RK3568 eth1
-    -> TP-Link 光纤链路
+    -> RK3568网口2 / eth1
     -> 上位机浏览器/VLC/摄像头客户端
 ```
 
 ```text
 惯导通道
-WTGAHRS3-TTL UART
-    -> RK3568 /dev/ttyS0
+WTGAHRS3-TTL -> CP2102 TTL转USB（下方USB口）
+    -> RK3568 CP2102稳定by-id路径
     -> wtgahrs3_reader.py 接收、校验、解析
     -> 项目 EB90 UDP 协议封装
     -> RK3568 eth1
-    -> TP-Link 光纤链路
+    -> RK3568网口2 / eth1
     -> 上位机 imu_udp_receiver.py
 ```
 
@@ -38,7 +38,7 @@ WTGAHRS3-TTL UART
     -> 状态帧按原路径返回上位机
 ```
 
-摄像头通道工作在以太网二层，不理解视频协议；惯导通道在应用层将串口数据转换成项目 EB90/JSON UDP 协议；转台通道保留设备原生 AA 二进制帧，仅由 RK3568 在 UDP 与 RS422 之间进行校验和转发。三条通道最终共享 RK3568 的 `eth1` 和光纤链路，但使用独立进程、独立串口和独立 UDP 端口，互不改变对方的数据格式。
+摄像头通道工作在以太网二层，不理解视频协议；惯导通道在应用层将USB串口数据转换成项目EB90/JSON UDP协议；转台通道保留设备原生AA二进制帧，仅由RK3568在UDP与RS422之间进行校验和转发。摄像头接网口1，上位机接网口2；上方USB属于转台，下方USB属于惯导。三个通道使用独立进程、串口和UDP端口。
 
 ## 2. RK3568 端部署内容
 
@@ -55,7 +55,7 @@ Linux 5.10.226 aarch64
 
 ```text
 eth0：摄像头侧，不配置业务IP
-eth1：电脑/光纤侧，192.168.1.101/24
+eth1（网口2）：上位机侧，192.168.1.101/24
 ```
 
 厂家内核没有启用 `CONFIG_BRIDGE`，不能使用标准 Linux bridge。因此摄像头透明转发不是通过 `br0` 实现，而是使用自研的用户态原始套接字程序。
@@ -75,7 +75,7 @@ Wants=ether-relay.service
 After=ether-relay.service
 ```
 
-转台服务同样在网络就绪和 `ether-relay.service` 之后启动。三个程序仍然是独立进程：摄像头转发使用 `eth0/eth1` 原始套接字，惯导使用 `/dev/ttyS0` 和 UDP `20002`，转台使用独立的 FTDI USB 串口和 UDP `20003`。其中一个服务异常重启不会改变其他通路的数据格式或端口。
+转台服务同样在网络就绪和`ether-relay.service`之后启动。三个程序仍然是独立进程：摄像头转发使用`eth0/eth1`原始套接字；惯导使用下方USB口CP2102的稳定`by-id`路径和UDP `20002`；转台使用上方USB口FTDI的稳定`by-id`路径和UDP `20003`。两个串口程序还使用排他文件锁。
 
 ## 3. RK3568 摄像头转发软件
 
@@ -204,7 +204,7 @@ outputs/wtgahrs3-reader.service
 ```bash
 /usr/bin/python3 /home/teamhd/imu-reader/wtgahrs3_reader.py \
   --transport ttl \
-  --port /dev/ttyS0 \
+  --port /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0 \
   --baud 9600 \
   --udp-host 192.168.1.102 \
   --udp-port 20002 \
@@ -235,16 +235,19 @@ RestartSec=2
 惯导使用：
 
 ```text
-/dev/ttyS0
+下方USB口的CP2102稳定`by-id`串口
 9600 baud
 8 data bits
 no parity
 1 stop bit
 ```
 
-程序直接通过 `os.open`、`termios` 和 `select` 操作串口：
+程序直接通过`os.open`、`flock`、`termios`和`select`操作串口：
 
 - `termios` 配置9600 8N1和 raw模式；
+- `flock`取得排他锁，避免与转台或其他串口程序同时读取一个设备；
+- 自动枚举`by-id`、`by-path`、`ttyUSB`和`ttyACM`，以有效WIT帧识别惯导；
+- 当前服务直接绑定下方CP2102稳定`by-id`路径；`--port auto`仅作为更换转换器后的后备识别方式；
 - `select` 等待数据，避免永久阻塞；
 - 内部字节缓冲区处理任意长度的分片读取；
 - 搜索 `0x55` 帧头完成流重新同步；
@@ -403,7 +406,7 @@ outputs/README_turntable.md
 
 - 不占用摄像头侧 `eth0`，只通过已有 `eth1` 地址收发 UDP；
 - 使用 UDP `20003`，与惯导 UDP `20002` 分离；
-- 使用独立 FTDI USB-RS422 设备，与惯导 `/dev/ttyS0` 分离；
+- 使用上方USB口的独立FTDI USB-RS422设备，与下方USB惯导通过稳定路径、协议探测和排他锁分离；
 - 使用独立 systemd 服务、日志和自动重启策略；
 - 只接受 `192.168.1.102` 发来的控制数据报，减少误控制风险。
 
@@ -610,7 +613,7 @@ RK3568开机后的软件时序如下：
 2. 服务准备 `eth0`、`eth1`，配置 `192.168.1.101/24` 并关闭offload。
 3. `ether_relay` 开始双向转发摄像头以太网帧。
 4. systemd启动 `wtgahrs3-reader.service`。
-5. Python程序打开 `/dev/ttyS0` 并监听 `192.168.1.101:20002`。
+5. Python程序打开下方CP2102稳定`by-id`串口并监听`192.168.1.101:20002`；更换转换器时可用`--port auto`通过有效WIT帧重新识别。
 6. 每收到一组有效 `0x51/0x52/0x53`，生成一条约10Hz的惯导样本。
 7. 样本封装为 `0x82` 数据报并单播至 `192.168.1.102:20002`。
 8. systemd启动 `turntable-gateway.service`，网关打开 FTDI USB-RS422 串口并监听 `192.168.1.101:20003`。
@@ -680,7 +683,7 @@ sudo systemctl restart turntable-gateway.service
 惯导软件链路合格条件：
 
 - `wtgahrs3-reader.service` 为 `active/enabled`；
-- `/dev/ttyS0` RX计数持续增长；
+- 服务参数指向下方CP2102稳定路径，且样本序号持续增长；
 - 串口帧checksum正确；
 - 上位机收到 `0x82`；
 - JSON schema为 `wtgahrs3.v1`；
@@ -688,6 +691,10 @@ sudo systemctl restart turntable-gateway.service
 - 接收频率约10Hz；
 - 连续测试丢包为0；
 - 摄像头流量与惯导UDP同时运行时均正常。
+
+2026-10-20本次USB改造实测结果：板端进程实际打开`/dev/ttyUSB1`（CP2102稳定
+`by-id`路径），服务保持`active/enabled`且部署后无新错误；上位机连续接收50包，
+丢包0，耗时4.992秒，频率10.02Hz。同期转台和摄像头转发服务均为`active`。
 
 转台软件链路合格条件：
 
@@ -705,4 +712,4 @@ sudo systemctl restart turntable-gateway.service
 
 系统的软件划分是：RK3568负责实时数据入口、摄像头二层转发、惯导串口解析以及转台 RS422-UDP 网关；上位机负责摄像头业务访问、惯导数据显示与控制，以及转台图形控制和状态监视。
 
-摄像头数据保持原始以太网协议，不经过应用层转换；惯导数据由板端从 WIT 串口协议转换为项目 EB90/JSON UDP 协议；转台数据保留设备原生 AA 帧，只在 UDP 与 RS422 之间转发并执行安全校验。三条通路共享同一条实际网络/光纤链路，但通过独立服务、串口和端口隔离，因此新增转台控制不会改变原有摄像头和惯导通路。
+摄像头数据保持原始以太网协议，不经过应用层转换；惯导数据由板端从WIT USB串口协议转换为项目EB90/JSON UDP协议；转台数据保留设备原生AA帧，只在UDP与RS422之间转发并执行安全校验。三条通路通过独立服务、串口和端口隔离：网口1接摄像头、网口2接上位机、上方USB接转台、下方USB接惯导。

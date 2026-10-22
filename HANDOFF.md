@@ -1,17 +1,17 @@
-# RK3568 摄像头、惯导、转台与光纤传输系统交接说明
+# RK3568 摄像头、USB惯导与USB转台系统交接说明
 
-> 最后更新：2026-10-17（Asia/Shanghai）  
-> 当前结论：摄像头传输和 WTGAHRS3-TTL 惯导传输此前已通过实际网口转光纤链路验收；转台 RS422-UDP 网关已部署并完成上位机到 RK3568 串口发送验证，转台回传尚待设备上电、接线和差分极性确认后完成闭环验收。
+> 最后更新：2026-10-20（Asia/Shanghai）
+> 当前配置：网口1接摄像头，网口2接上位机；上方USB接转台，下方USB通过TTL转USB接WTGAHRS3-TTL。板端实测上方转台为FTDI `/dev/ttyUSB0`，下方惯导为CP2102 `/dev/ttyUSB1`；服务均使用各自稳定`by-id`路径。2026-10-20当前USB链路已完成50包连续接收测试，0丢包、约10.02Hz。
 
 ## 1. 系统目标与当前状态
 
 本系统以 CPG-3568（RK3568）为核心，同时完成三项功能：
 
 1. 摄像头以太网数据经 RK3568 双网口透明转发到电脑。
-2. WTGAHRS3-TTL 惯导数据由 RK3568 串口采集、解析并封装成 UDP，再发送到电脑。
+2. WTGAHRS3-TTL 惯导通过TTL转USB接入RK3568下方USB口，数据经解析并封装成UDP发送到电脑。
 3. 伺服转台通过四线全双工 USB-RS422 接入 RK3568，以独立 UDP 端口向上位机透明转发转台原生协议帧。
 
-最终现场链路已接入 TP-Link 网口转光纤收发器，摄像头和惯导数据均已验收通过。两个功能可以同时运行。
+当前直连拓扑为网口1接摄像头、网口2接电脑。此前光纤链路及UART0惯导链路的验收记录保留作历史参考；更换为USB惯导后必须重新完成第8节所列检查。
 
 ## 2. 最终拓扑
 
@@ -24,15 +24,7 @@ RK3568 eth0
         |
         | 用户态二层透明转发 ether-relay.service
         v
-RK3568 eth1（管理地址 192.168.1.101/24）
-        |
-        | 网线
-        v
-TP-Link 网口转光纤收发器
-        |
-        | 光纤链路
-        v
-远端光纤收发器
+RK3568 eth1 / 网口2（管理地址 192.168.1.101/24）
         |
         | 网线
         v
@@ -40,11 +32,11 @@ TP-Link 网口转光纤收发器
 ```
 
 ```text
-WTGAHRS3-TTL
+WTGAHRS3-TTL + TTL转USB
         |
-        | TTL UART，9600 8N1
+        | USB串口，9600 8N1（下方USB口）
         v
-RK3568 UART0 /dev/ttyS0
+RK3568 CP2102稳定by-id路径（当前对应/dev/ttyUSB1）
         |
         | WIT 0x55 标准协议解析
         v
@@ -52,10 +44,10 @@ UDP EB90 协议封装
         |
         | 192.168.1.101 -> 192.168.1.102:20002
         v
-TP-Link 光纤链路 -> 电脑
+RK3568网口2 -> 电脑
 ```
 
-网口转光纤设备只负责二层介质转换，不解析摄像头协议或惯导 UDP 协议，也不需要在 RK3568 上安装专用驱动。
+如恢复此前的TP-Link光纤收发器，它只负责二层介质转换，不解析摄像头协议或惯导UDP协议，也不需要在RK3568上安装专用驱动。
 
 ## 3. 已确认硬件与网络信息
 
@@ -93,33 +85,33 @@ TP-Link 光纤链路 -> 电脑
 ### 3.4 惯导
 
 - 最终型号：`WTGAHRS3-TTL`。
-- 接口：TTL UART，不再使用原 WTGAHRS3-485、USB-RS485 或黑色 RS-422/485 转换模块方案。
+- 接口：TTL UART，经TTL转USB模块接入RK3568下方USB口；不能使用RS232或RS485转换模块。
 - 串口参数：`9600 8N1`。
 - 输出协议：WIT 标准串口协议，每帧 11 字节、帧头 `0x55`、末字节为累加校验。
 - 实测周期：约 10 Hz。
-- RK3568 串口节点：`/dev/ttyS0`。
-- `/dev/ttyS1` 不是40针排针 UART0，不能用于当前惯导接线。
+- 下方USB口实测为CP2102 `10c4:ea60`，`by-id`路径为`usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0`。
+- 上方USB口实测为FTDI `0403:6001`，转台使用`usb-FTDI_FT232R_USB_UART_A9UOWY7G-if00-port0`；两个服务不依赖可变的`ttyUSB`编号。
 
-## 4. 惯导最终接线
+## 4. 惯导当前USB接线
 
-RK3568 40针排针接线如下：
+WTGAHRS3-TTL先连接TTL转USB模块，再把模块插入RK3568下方USB口：
 
-| WTGAHRS3-TTL | RK3568排针 | 说明 |
+| WTGAHRS3-TTL | TTL转USB | 说明 |
 |---|---:|---|
-| VCC | 2脚或4脚 | 5V供电 |
-| GND | 6脚、9脚或14脚 | 共地 |
-| TX | 10脚 | `UART0_RX`，Linux `/dev/ttyS0` 接收 |
-| RX | 8脚 | `UART0_TX`，Linux `/dev/ttyS0` 发送 |
+| VCC | 5V/VCC | 按惯导和转换器规格供电 |
+| GND | GND | 必须共地 |
+| TX | RXD | 惯导发送接转换器接收 |
+| RX | TXD | 惯导接收接转换器发送 |
 
-必须交叉连接 TX/RX，不能接成 TX 对 TX、RX 对 RX。
+必须交叉连接TX/RX，不能接成TX对TX、RX对RX；信号侧必须是TTL电平。
 
-板端 `/dev/ttyS0` 回环已经验证：8脚和10脚短接时，发送和接收内容完全一致。惯导四线接回后，也已通过双向测试：RK3568 发送读取版本命令 `FF AA 27 2E 00`，惯导返回：
+历史UART0接法曾完成回环和双向测试，读取版本命令`FF AA 27 2E 00`曾返回：
 
 ```text
 55 5F CF 3D CF 3D 00 00 00 00 CC
 ```
 
-这证明惯导 TX→RK3568 RX 和 RK3568 TX→惯导 RX 两个方向均正常。
+这段数据只说明此前UART0接线情况。当前TTL转USB链路已按第10节结果重新验证。
 
 ## 5. 摄像头透明转发
 
@@ -194,7 +186,7 @@ tests/test_wtgahrs3_reader.py
 
 ```text
 --transport ttl
---port /dev/ttyS0
+--port /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0
 --baud 9600
 --udp-host 192.168.1.102
 --udp-port 20002
@@ -293,7 +285,7 @@ sudo journalctl -u wtgahrs3-reader.service -n 50 --no-pager
 
 惯导服务配置了 `StandardOutput=null`，正常样本不会以10Hz持续写入 journal；错误仍写入 journal。
 
-### 7.3 查看接口和串口计数
+### 7.3 查看接口和USB串口
 
 ```bash
 ip -br addr
@@ -301,10 +293,11 @@ ip -br link show eth0
 ip -br link show eth1
 ip -s link show eth0
 ip -s link show eth1
-sudo grep -E '^[01]:' /proc/tty/driver/serial
+ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
+ls -l /dev/serial/by-id/ /dev/serial/by-path/ 2>/dev/null
 ```
 
-当前 UART0 是 `/dev/ttyS0`，对应 `/proc/tty/driver/serial` 中第0行。惯导运行时 RX 应持续增加。
+确认惯导服务参数指向CP2102稳定`by-id`路径，下方惯导串口必须能输出有效WIT帧。更换转换器且没有稳定`by-id`时才使用`--port auto`诊断。
 
 ### 7.4 重启服务
 
@@ -320,28 +313,28 @@ sudo systemctl restart wtgahrs3-reader.service
 1. 检查电脑有线地址是否仍是 `192.168.1.102/24`。
 2. Ping RK3568：`ping 192.168.1.101`。
 3. 查看 `wtgahrs3-reader.service` 是否为 `active`。
-4. 查看 `/proc/tty/driver/serial` 的 UART0 RX 是否增长。
-5. 确认程序使用 `/dev/ttyS0`，不是 `/dev/ttyS1`。
+4. 查看`journalctl`中自动选择的USB串口，确认没有误选上方转台FTDI。
+5. 确认TTL转USB模块出现在`/dev/ttyUSB*`或`/dev/ttyACM*`，必要时查看`dmesg`。
 6. 确认惯导为 `9600 8N1`。
 7. 确认电脑防火墙允许 UDP 20002。
-8. 检查两端光纤收发器和光纤链路指示灯。
+8. 检查网口2与电脑之间的链路灯；若现场使用光纤收发器，再检查两端光纤链路。
 
-如果 UART RX 为0，先不要修改软件，应优先检查供电、共地、线序和接触：
+如果USB串口存在但没有有效WIT帧，先检查供电、共地、线序和电平：
 
 ```text
 VCC -> 5V
 GND -> GND
-TX  -> 10脚 UART0_RX
-RX  -> 8脚 UART0_TX
+TX  -> TTL转USB RXD
+RX  -> TTL转USB TXD
 ```
 
-### 8.2 验证板载 UART
+### 8.2 验证TTL转USB模块
 
-断开惯导供电和 TX/RX，把8脚与10脚短接，然后发送一段测试字符串。此前实测回环内容完全一致，可用于区分板端 UART 故障和惯导/线缆故障。
+停止惯导服务，断开惯导信号线，在TTL转USB模块的TXD与RXD之间做回环测试。测试后拆除短接并恢复惯导接线。不要在转台的RS422转换器上执行TTL回环。
 
 ### 8.3 验证惯导双向通信
 
-停止惯导服务后，以9600 8N1向 `/dev/ttyS0` 发送：
+停止惯导服务后，先从`/dev/serial/by-id`或`by-path`确认下方TTL转USB对应节点，再以9600 8N1向该节点发送：
 
 ```text
 FF AA 27 2E 00
@@ -362,7 +355,7 @@ FF AA 27 2E 00
 ## 9. 重要注意事项
 
 - 当前最终惯导是 `WTGAHRS3-TTL`，不要再按旧的 WTGAHRS3-485 Modbus方式轮询。
-- 当前40针 UART0 节点是 `/dev/ttyS0`，不是 `/dev/ttyS1`。
+- 当前惯导从下方USB口接入，服务使用CP2102稳定`by-id`路径，不要重新写死为`/dev/ttyS0`或某个`ttyUSB`编号。
 - 惯导供电使用5V；UART信号连接必须交叉并共地。
 - 不要把5V直接接到 UART RX/TX 信号脚。
 - 不要覆盖或修改当前带签名的 FIT 启动镜像。
@@ -374,19 +367,28 @@ FF AA 27 2E 00
 
 ## 10. 当前验收结论
 
-截至2026-09-22，以下项目已经完成：
+截至2026-09-22，旧UART0/光纤接法曾完成以下验收：
 
 - RK3568双网口摄像头二层透明转发。
 - 摄像头经TP-Link网口转光纤设备到电脑的实际光纤链路。
 - 摄像头Ping、HTTP、RTSP端口和视频数据验证。
-- WTGAHRS3-TTL经UART0 `/dev/ttyS0`采集。
+- WTGAHRS3-TTL经当时的UART0链路采集。
 - WIT标准协议帧校验和姿态数据解析。
 - 惯导数据封装为项目EB90/`0x82` UDP协议。
 - 惯导UDP经实际光纤链路发送到电脑。
 - 摄像头与惯导同时运行。
 - 两个服务开机自启。
 
-摄像头和惯导通路可以视为已完成并通过此前现场验收；转台通路的软件部署已经完成，但仍需取得有效设备回传后才能完成双向闭环验收。后续若更改电脑IP、摄像头IP、惯导波特率、UDP目标地址或网络拓扑，应先更新本文档和对应systemd服务配置，再重新进行完整链路测试。
+2026-10-20当前USB接法已完成部署和现场验证：
+
+- 下方USB口识别为CP2102 `10c4:ea60`，稳定路径当前映射到`/dev/ttyUSB1`；
+- 上方转台识别为FTDI `0403:6001`，稳定路径当前映射到`/dev/ttyUSB0`；
+- `wtgahrs3-reader.service`已启用并保持`active`，进程实际打开`/dev/ttyUSB1`；
+- 部署后无新warning/error，服务重启计数没有继续增加；
+- 上位机连续接收50包，`sequence`连续、丢包0、耗时4.992秒、频率10.02包/秒；
+- `wtgahrs3-reader.service`、`turntable-gateway.service`和`ether-relay.service`同时为`active`。
+
+上述结果确认USB惯导到网口2上位机的完整软件链路可用。摄像头视频和转台运动的并发业务验收不在本次修改范围内；后续若更改电脑IP、惯导波特率、UDP目标地址或USB转换器，应同步更新本文档和对应systemd服务配置。
 
 ## 11. 转台 RS422 接入
 
@@ -411,7 +413,7 @@ RK3568 turntable-gateway.service
 
 转台通路与原系统隔离：
 
-- 转台使用 USB 串口稳定 `by-id` 路径，不占用惯导的 `/dev/ttyS0`。
+- 转台使用FTDI稳定`by-id`路径，惯导使用CP2102稳定`by-id`路径，两个程序同时使用排他锁隔离。
 - 转台使用 UDP `20003`，不占用惯导的 UDP `20002`。
 - 未修改 `ether-relay.service`、`wtgahrs3-reader.service`、两块网卡配置或现有惯导程序。
 - 网关只接受来自 `192.168.1.102`、设备 ID 为 `01`、命令长度合法且累加校验正确的控制帧。
@@ -485,7 +487,7 @@ python outputs\turntable_udp_client.py point 10 5
 - 控制测试发送了文档所述双轴步进 `+1.0°/0°` 帧，但设备实际从约 `99.7°/89.9°` 朝零位大幅运动，而不是相对移动 `1°`。随即发送停止命令并收到成功应答，最终稳定在约 `69.7°/60.3°`，两轴速度为 `0.0°/s`，故障位为 `0`。
 - 上述结果证明上位机到 RK3568、RS422 控制、转台应答和状态回传全链路可用，同时证明当前协议文档的步进语义不能直接用于正式控制。网关现已拒绝步进子命令；在厂家确认前仅使用状态查询、停止及经过现场审查的定点命令。
 - 摄像头本次未上电，`eth0` 无链路符合现场条件；`ether-relay.service` 保持运行，`eth0`、`eth1` 的 errors、dropped、carrier 和 collisions 均为 0。
-- 惯导服务和配置未改动；检查时 `/dev/ttyS0` 没有收到有效惯导帧，原服务按既有策略超时重启。惯导设备重新输出后需复测 UDP `20002`，该现象与转台使用的 USB 串口和 UDP `20003` 相互独立。
+- 该段为2026-10-16历史记录：当时惯导仍走`/dev/ttyS0`且没有收到有效帧。2026-10-20已改为下方USB CP2102稳定路径，必须重新复测UDP `20002`；转台继续使用独立FTDI串口和UDP `20003`。
 
 ### 11.5 接线复核
 

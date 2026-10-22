@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .coverage
+.ppt-build/
 Thumbs.db
 Desktop.ini
 *.tmp

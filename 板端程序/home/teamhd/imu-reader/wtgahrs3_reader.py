@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Read a WIT Motion WTGAHRS3 sensor over TTL or Modbus RTU.
+"""Read a WIT Motion WTGAHRS3 sensor over a Linux serial device.
 
 The runtime path targets Linux (including the RK3568 Ubuntu image) and uses
 only the Python standard library.  Protocol helpers are platform independent
-so captured frames can also be decoded during development on Windows.
+so captured frames can also be decoded during development on Windows.  For a
+WTGAHRS3-TTL connected through a USB-TTL converter, ``--port auto`` probes
+available USB serial devices and selects the first stream containing valid WIT
+0x55 frames.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import glob
 import json
 import os
 import select
@@ -193,6 +197,10 @@ class LinuxSerial:
         self.timeout = timeout
         self.fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
         try:
+            # Cooperate with the turntable gateway and other serial services.
+            # A locked port is skipped by USB auto-detection instead of having
+            # two processes consume bytes from the same converter.
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             attrs = termios.tcgetattr(self.fd)
             attrs[0] = 0
             attrs[1] = 0
@@ -330,6 +338,70 @@ class WitTtlSerial(LinuxSerial):
                 return sample
 
 
+USB_SERIAL_PATTERNS = (
+    "/dev/serial/by-id/*",
+    "/dev/serial/by-path/*",
+    "/dev/ttyUSB*",
+    "/dev/ttyACM*",
+)
+
+
+def serial_port_candidates(excluded: Sequence[str] = ()) -> list[str]:
+    """Return unique USB serial ports, preferring stable Linux symlinks."""
+    excluded_real = {os.path.realpath(path) for path in excluded}
+    seen_real: set[str] = set()
+    candidates: list[str] = []
+    for pattern in USB_SERIAL_PATTERNS:
+        for path in sorted(glob.glob(pattern)):
+            real_path = os.path.realpath(path)
+            if real_path in excluded_real or real_path in seen_real:
+                continue
+            seen_real.add(real_path)
+            candidates.append(path)
+    return candidates
+
+
+def open_ttl_transport(
+    port: str,
+    baud: int,
+    timeout: float,
+    excluded: Sequence[str],
+    probe_timeout: float,
+) -> tuple[WitTtlSerial, ImuSample | None]:
+    """Open an explicit port or discover a USB-TTL WIT data stream."""
+    if port != "auto":
+        return WitTtlSerial(port, baud, timeout), None
+
+    candidates = serial_port_candidates(excluded)
+    if not candidates:
+        raise SensorError("no USB serial ports were found")
+
+    failures: list[str] = []
+    for candidate in candidates:
+        transport: WitTtlSerial | None = None
+        try:
+            transport = WitTtlSerial(candidate, baud, probe_timeout)
+            first_sample = transport.read_sample()
+            transport.timeout = timeout
+            print(
+                f"auto-selected WTGAHRS3-TTL serial port: {candidate} "
+                f"({os.path.realpath(candidate)})",
+                file=sys.stderr,
+                flush=True,
+            )
+            return transport, first_sample
+        except (OSError, SensorError) as exc:
+            failures.append(f"{candidate}: {exc}")
+            if transport is not None:
+                transport.close()
+
+    details = "; ".join(failures)
+    raise SensorError(
+        "no USB serial port produced valid WTGAHRS3-TTL frames"
+        + (f" ({details})" if details else "")
+    )
+
+
 class UdpPublisher:
     """Bidirectional UDP endpoint for samples, commands, and responses."""
 
@@ -390,13 +462,29 @@ def _parse_hex_frame(value: str) -> bytes:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", default="/dev/ttyUSB0")
+    parser.add_argument(
+        "--port",
+        default="auto",
+        help="serial device, or 'auto' to identify the USB-TTL WIT stream",
+    )
     parser.add_argument("--baud", type=int, default=9600)
     parser.add_argument(
         "--transport",
         choices=("modbus", "ttl"),
-        default="modbus",
+        default="ttl",
         help="485 uses Modbus polling; TTL passively receives WIT 0x55 frames",
+    )
+    parser.add_argument(
+        "--exclude-port",
+        action="append",
+        default=[],
+        help="serial path excluded from --port auto; may be repeated",
+    )
+    parser.add_argument(
+        "--probe-timeout",
+        type=float,
+        default=1.5,
+        help="seconds to wait for valid WIT frames on each auto-detect candidate",
     )
     parser.add_argument("--address", type=_parse_address, default=0x10)
     parser.add_argument("--interval", type=float, default=0.2)
@@ -535,15 +623,26 @@ def run_reader(args: argparse.Namespace) -> None:
     state = GatewayState()
     try:
         emitted = 0
-        transport_class = WitTtlSerial if args.transport == "ttl" else LinuxSerial
-        with transport_class(args.port, args.baud, args.timeout) as transport:
+        if args.transport == "ttl":
+            transport, pending_sample = open_ttl_transport(
+                args.port,
+                args.baud,
+                args.timeout,
+                args.exclude_port,
+                args.probe_timeout,
+            )
+        else:
+            transport = LinuxSerial(args.port, args.baud, args.timeout)
+            pending_sample = None
+        with transport:
             while args.count == 0 or emitted < args.count:
                 started = time.monotonic()
                 sample = (
-                    transport.read_sample()
+                    pending_sample or transport.read_sample()
                     if args.transport == "ttl"
                     else read_sample(transport, args.address)
                 )
+                pending_sample = None
                 state.sensor_online = True
                 emit(sample, args.pretty)
                 emitted += 1
@@ -579,6 +678,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if args.interval < 0 or args.timeout <= 0 or args.count < 0:
         raise ValueError("interval/count must be non-negative and timeout must be positive")
+    if args.probe_timeout <= 0:
+        raise ValueError("probe timeout must be positive")
+    if args.transport == "modbus" and args.port == "auto":
+        raise ValueError("Modbus transport requires an explicit --port")
     if not 1 <= args.udp_port <= 65535:
         raise ValueError("UDP port must be in the range 1..65535")
     if not 0 <= args.udp_listen_port <= 65535:
