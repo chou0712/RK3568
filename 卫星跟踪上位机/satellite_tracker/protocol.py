@@ -10,6 +10,8 @@ from .config import (
     AZIMUTH_MIN_DEG,
     ELEVATION_MAX_DEG,
     ELEVATION_MIN_DEG,
+    MAX_AZIMUTH_SPEED_DPS,
+    MAX_ELEVATION_SPEED_DPS,
 )
 
 HEADER = 0xAA
@@ -56,6 +58,20 @@ def build_fault_query() -> bytes:
 
 def build_stop_command() -> bytes:
     return _with_checksum(bytes.fromhex("AA 0C 01 06 04 01 00 00 00 00 00"))
+
+
+def build_speed_command(
+    azimuth_speed_dps: float, elevation_speed_dps: float
+) -> bytes:
+    """Build the 11-byte speed-setting frame accepted by the RK3568 gateway."""
+    body = bytes.fromhex("AA 0B 01 06 07 01")
+    body += _scaled_u16(
+        azimuth_speed_dps, 0.0, MAX_AZIMUTH_SPEED_DPS, "方位转速"
+    )
+    body += _scaled_u16(
+        elevation_speed_dps, 0.0, MAX_ELEVATION_SPEED_DPS, "俯仰转速"
+    )
+    return _with_checksum(body)
 
 
 def build_point_command(azimuth_deg: float, elevation_deg: float) -> bytes:

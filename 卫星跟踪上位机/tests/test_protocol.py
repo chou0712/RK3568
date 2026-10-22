@@ -3,6 +3,7 @@ import unittest
 from satellite_tracker.protocol import (
     ProtocolError,
     build_point_command,
+    build_speed_command,
     build_status_query,
     build_stop_command,
     checksum_sum8,
@@ -24,12 +25,24 @@ class ProtocolTests(unittest.TestCase):
             build_point_command(10.0, 5.0),
             "AA 0C 01 06 02 01 00 00 64 00 32 56",
         )
+        self.assert_frame(
+            build_speed_command(5.0, 5.0),
+            "AA 0B 01 06 07 01 00 32 00 32 28",
+        )
 
     def test_point_range_is_checked(self) -> None:
         with self.assertRaises(ValueError):
             build_point_command(-0.1, 5.0)
         with self.assertRaises(ValueError):
             build_point_command(10.0, 90.1)
+
+    def test_speed_range_is_checked(self) -> None:
+        with self.assertRaises(ValueError):
+            build_speed_command(-0.1, 5.0)
+        with self.assertRaises(ValueError):
+            build_speed_command(5.0, 5.1)
+        with self.assertRaises(ValueError):
+            build_speed_command(5.1, 5.0)
 
     def test_status_15_byte_variant(self) -> None:
         frame = bytes.fromhex("AA 10 01 07 00 00 64 00 31 00 36 00 00 00 8D")

@@ -25,6 +25,7 @@ from .protocol import (
     TurntableStatus,
     build_fault_query,
     build_point_command,
+    build_speed_command,
     build_status_query,
     build_stop_command,
     target_reached,
@@ -157,6 +158,8 @@ class SatelliteTrackerApp(tk.Tk):
 
         self.point_az_var = tk.StringVar(value="0.0")
         self.point_el_var = tk.StringVar(value="0.0")
+        self.speed_az_var = tk.StringVar(value="5.0")
+        self.speed_el_var = tk.StringVar(value="5.0")
         point = ttk.LabelFrame(self.control_tab, text="定点控制", padding=12)
         point.pack(fill="x", pady=(10, 0))
         ttk.Label(point, text="方位角（0～360°）").grid(row=0, column=0, sticky="w")
@@ -168,6 +171,15 @@ class SatelliteTrackerApp(tk.Tk):
         ttk.Button(point, text="天顶姿态 0°/90°", command=self.zenith_position).grid(row=0, column=6, padx=5)
         ttk.Button(point, text="查询状态", command=lambda: self._safe_send(build_status_query())).grid(row=0, column=7, padx=5)
         ttk.Button(point, text="查询故障", command=lambda: self._safe_send(build_fault_query())).grid(row=0, column=8, padx=5)
+
+        ttk.Label(point, text="方位转速（0～5°/s）").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        ttk.Entry(point, textvariable=self.speed_az_var, width=14).grid(row=1, column=1, padx=6, pady=(10, 0))
+        ttk.Label(point, text="俯仰转速（0～5°/s）").grid(row=1, column=2, sticky="w", pady=(10, 0))
+        ttk.Entry(point, textvariable=self.speed_el_var, width=14).grid(row=1, column=3, padx=6, pady=(10, 0))
+        ttk.Button(point, text="应用转速", command=self.apply_speed).grid(row=1, column=4, padx=5, pady=(10, 0))
+        ttk.Label(point, text="应用前会先停止当前运动；该转速同时用于定点、回零和卫星跟随。", foreground="#607d8b").grid(
+            row=1, column=5, columnspan=4, sticky="w", padx=(8, 0), pady=(10, 0)
+        )
 
         log_frame = ttk.LabelFrame(self.control_tab, text="通信与运行日志", padding=6)
         log_frame.pack(fill="both", expand=True, pady=(10, 0))
@@ -339,6 +351,31 @@ class SatelliteTrackerApp(tk.Tk):
         if self._safe_send(frame):
             self.manual_motion_status_after = sent_at
             self.footer_var.set(f"定点目标：方位 {azimuth:.1f}° / 俯仰 {elevation:.1f}°")
+
+    def apply_speed(self) -> None:
+        if not self.transport.connected:
+            messagebox.showwarning("尚未连接", "请先连接 RK3568 UDP 网关。")
+            return
+        try:
+            azimuth_speed = float(self.speed_az_var.get())
+            elevation_speed = float(self.speed_el_var.get())
+            frame = build_speed_command(azimuth_speed, elevation_speed)
+        except ValueError as exc:
+            messagebox.showerror("参数错误", str(exc))
+            return
+
+        # 避免在运动途中突变速度；停止当前任务后再更新设备的目标速度。
+        self.stop_tracking(send_stop=False)
+        self._cancel_homing()
+        self.manual_motion_status_after = None
+        self._safe_send(build_stop_command(), popup=False)
+        if self._safe_send(frame):
+            message = (
+                f"转速已设置：方位 {azimuth_speed:.1f}°/s / "
+                f"俯仰 {elevation_speed:.1f}°/s"
+            )
+            self.footer_var.set(message)
+            self._log(message)
 
     def mechanical_home(self) -> None:
         if not self._motion_ready():
