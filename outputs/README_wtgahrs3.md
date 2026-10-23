@@ -5,15 +5,15 @@
 - 型号：WTGAHRS3-TTL
 - 协议：WIT 标准串口协议，11 字节 `0x55` 帧
 - 波特率：9600，8N1
-- 连接方式：WTGAHRS3-TTL -> TTL转USB模块 -> RK3568下方USB口
-- Linux节点：实测为`/dev/ttyUSB1`，服务固定使用CP2102稳定`by-id`路径
+- 连接方式：WTGAHRS3-TTL TTL串口直接接入RK3568 UART0
+- Linux节点：`/dev/ttyS0`
 - RK3568上方USB口：转台FTDI USB-RS422，固定由 `turntable-gateway.service` 使用
-- RK3568下方USB口：Silicon Labs CP2102 TTL转USB（`10c4:ea60`）
+- RK3568下方USB口不再用于惯导；原CP2102已移除
 
 程序当前读取加速度、角速度、姿态角和温度，以一行一个 JSON 对象输出到标准输出，同时可将每个样本作为一个 UDP 数据报发送。当前阶段不写数据文件，也不验证 GNSS 定位。
 
-2026-10-20已在当前RK3568完成部署：进程实际打开CP2102对应的`/dev/ttyUSB1`，
-上位机连续接收50包，丢包0，频率10.02Hz；转台和摄像头转发服务同时保持`active`。
+2026-10-22已在当前RK3568完成UART0改造：`/dev/ttyS0`前台连续读取5条有效样本，
+服务切换后上位机连续收到20包，丢包0，实测约10.49包/秒。
 
 ## 通过网口2发送惯导数据
 
@@ -93,23 +93,23 @@ while True:
 
 ## 在 RK3568 上部署
 
-先将转台接上方USB口、TTL转USB惯导接下方USB口，然后检查：
+将惯导TTL串口直接接入RK3568 UART0，TX/RX交叉并共地，然后检查：
 
 ```bash
-ls -l /dev/ttyUSB* /dev/serial/by-id/ /dev/serial/by-path/
-dmesg | tail -n 30
+ls -l /dev/ttyS0
+systemctl is-active serial-getty@ttyS0.service
+dmesg | grep -E 'ttyS0|uart'
 ```
 
-不要长期把惯导写死为`/dev/ttyUSB1`：重启或改变插拔顺序后编号可能改变。
-当前板端已确认下方USB是CP2102，服务使用以下稳定设备路径：
+当前服务固定使用RK3568 UART0：
 
 ```text
-/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0
+/dev/ttyS0
 ```
 
-如更换无稳定`by-id`的TTL转USB模块，可改用`--port auto`。自动模式按`by-id`、
-`by-path`、`ttyUSB`、`ttyACM`顺序扫描，只接受能连续产生校验正确WIT
-`0x51/0x52/0x53`帧的串口。串口还使用排他文件锁，避免和转台服务共同读取。
+`serial-getty@ttyS0.service`必须保持未启用，避免登录终端抢占惯导串口。程序仍保留
+`--port auto`作为USB-TTL兼容模式，但当前部署不使用该模式。串口使用排他文件锁，
+避免其他进程同时读取UART0。
 
 部署程序：
 
@@ -119,7 +119,7 @@ cp wtgahrs3_reader.py /home/teamhd/imu-reader/
 chmod +x /home/teamhd/imu-reader/wtgahrs3_reader.py
 python3 /home/teamhd/imu-reader/wtgahrs3_reader.py \
   --transport ttl \
-  --port /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0 \
+  --port /dev/ttyS0 \
   --baud 9600 --count 10 --pretty \
   --udp-host 192.168.1.102 --udp-port 20002 --udp-source 192.168.1.101
 ```
@@ -147,17 +147,16 @@ sudo journalctl -u wtgahrs3-reader.service -f
 
 ## 常见故障
 
-- `no USB serial ports were found`：检查下方USB口、转换器供电和 `dmesg`，确认生成了 `/dev/ttyUSB*` 或 `/dev/ttyACM*`。
-- `no USB serial port produced valid ... frames`：确认惯导输出为 WIT 标准协议、9600 8N1，TTL的TX/RX交叉且共地，并确认没有其他程序占用惯导串口。
+- `timeout reading a valid TTL frame from /dev/ttyS0`：确认UART0接线、惯导供电、9600 8N1，并确认TX/RX交叉且共地。
 - `Permission denied`：将 `teamhd` 加入 `dialout` 组，或检查 udev 权限。
-- 转台异常或端口忙：确认转台使用FTDI稳定路径、惯导使用CP2102稳定路径，两个服务没有指向同一真实节点。
+- 转台异常或端口忙：确认转台仍使用FTDI稳定路径，惯导仅使用`/dev/ttyS0`。
 - 校验错误：缩短TTL线缆，检查共地、供电和电平，确认转换器是TTL串口而不是RS232/RS485。
 
 ## 命令行参数
 
 ```text
 --transport ttl        WTGAHRS3-TTL 被动接收模式（默认）
---port auto            自动识别产生有效WIT帧的USB串口（默认）
+--port /dev/ttyS0      RK3568 UART0（默认）；auto为USB-TTL兼容模式
 --exclude-port PATH    自动识别时排除指定串口；可以重复使用
 --probe-timeout 1.5    每个候选USB串口的识别等待时间（秒）
 --baud 9600           串口波特率

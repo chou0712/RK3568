@@ -3,9 +3,10 @@
 
 The runtime path targets Linux (including the RK3568 Ubuntu image) and uses
 only the Python standard library.  Protocol helpers are platform independent
-so captured frames can also be decoded during development on Windows.  For a
-WTGAHRS3-TTL connected through a USB-TTL converter, ``--port auto`` probes
-available USB serial devices and selects the first stream containing valid WIT
+so captured frames can also be decoded during development on Windows.  The
+RK3568 deployment connects the WTGAHRS3-TTL directly to UART0
+(``/dev/ttyS0``).  ``--port auto`` remains available as a compatibility mode
+for USB-TTL converters and selects the first USB stream containing valid WIT
 0x55 frames.
 """
 
@@ -464,8 +465,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--port",
-        default="auto",
-        help="serial device, or 'auto' to identify the USB-TTL WIT stream",
+        default="/dev/ttyS0",
+        help=(
+            "serial device (default: RK3568 UART0 /dev/ttyS0), or 'auto' "
+            "to identify a USB-TTL WIT stream"
+        ),
     )
     parser.add_argument("--baud", type=int, default=9600)
     parser.add_argument(

@@ -20,10 +20,10 @@ def wit_frame(frame_type, values):
 
 
 class Wtgahrs3TtlTests(unittest.TestCase):
-    def test_cli_defaults_to_ttl_usb_auto_detection(self):
+    def test_cli_defaults_to_ttl_uart0(self):
         args = reader.build_parser().parse_args([])
         self.assertEqual(args.transport, "ttl")
-        self.assertEqual(args.port, "auto")
+        self.assertEqual(args.port, "/dev/ttyS0")
         self.assertEqual(args.baud, 9600)
 
     def test_parse_valid_ttl_frame(self):
